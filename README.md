@@ -25,7 +25,7 @@ npm run watch
 
 example code
 ```typescript
-import {OnLoadInterceptor} from "frida-onload";
+import * as OnLoadInterceptor from "frida-onload";
 
 OnLoadInterceptor.attach('libtarget.so', (modulePath: string, base: NativePointer) => {
     console.log('hit module loading! @' + base);

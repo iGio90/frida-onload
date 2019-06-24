@@ -19,7 +19,7 @@
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  SOFTWARE.
  */
-import {OnLoadInterceptor} from "frida-onload";
+import * as OnLoadInterceptor from "frida-onload";
 
 OnLoadInterceptor.attach('libtarget.so', (modulePath: string, base: NativePointer) => {
     console.log('hit module loading! @' + base);
