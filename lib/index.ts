@@ -1,4 +1,4 @@
-const nullPtr = ptr(0);
+const nullPtr = NULL;
 const interceptors: InvocationListener[] = [];
 let onLoadCallback: OnLoadCallback | null = null;
 let attached = false;
