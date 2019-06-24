@@ -1,6 +1,6 @@
 # Frida onload
 
-A frida module to quickly hook at native module initialization.
+A frida module to get a callback when module are being initialized.
 
 Only for android at the moment
 
@@ -27,8 +27,8 @@ example code
 ```typescript
 import * as OnLoadInterceptor from "frida-onload";
 
-OnLoadInterceptor.attach('libtarget.so', (modulePath: string, base: NativePointer) => {
-    console.log('hit module loading! @' + base);
+OnLoadInterceptor.attach((modulePath: string, base: NativePointer) => {
+    console.log('hit module loading! @name ' + modulePath + ' @' + base);
 });
 ```
 
