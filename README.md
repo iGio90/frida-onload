@@ -25,19 +25,24 @@ npm run watch
 
 example code
 ```typescript
-import * as OnLoadInterceptor from "frida-onload";
+import {OnLoadInterceptor} from "frida-onload";
 
 OnLoadInterceptor.attach((modulePath: string, base: NativePointer) => {
     console.log('hit module loading! @name ' + modulePath + ' @' + base);
 });
+
+OnLoadInterceptor.attachJava((clazz: string) => {
+    console.log('hit java class loader! @' + clazz)
+});
 ```
 
 ## changelog
+**2019.06.28**
+* added support for windows module loading: thanks @PinkiePieStyle
+* added support for Java ClassLoader loading class
 
 **2019.06.24**
-```
 * push
-```
 
 ---
 

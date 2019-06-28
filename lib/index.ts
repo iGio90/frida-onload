@@ -1,58 +1,107 @@
-const nullPtr = NULL;
-const interceptors: InvocationListener[] = [];
-let onLoadCallback: OnLoadCallback | null = null;
-let attached = false;
+export module OnLoadInterceptor {
+    const interceptors: InvocationListener[] = [];
+    let onLoadCallback: OnLoadCallback | null = null;
+    let onJavaClassLoadCallback: OnJavaClassLoadCallback | null = null;
 
-type OnLoadCallback = (name: string, base: NativePointer) => void;
+    let attached = false;
+    let javaAttached = false;
 
-export function attach(callback: OnLoadCallback): void {
-    onLoadCallback = callback;
-    if (!attached) {
-        attachInternals();
+    type OnLoadCallback = (name: string, base: NativePointer) => void;
+    type OnJavaClassLoadCallback = (clazz: string) => void;
+
+    export function attach(callback: OnLoadCallback): boolean {
+        onLoadCallback = callback;
+        if (!attached) {
+            attached = attachInternals();
+        }
+        return attached;
     }
-}
 
-export function detach(): void {
-    interceptors.forEach(interceptor => {
-        interceptor.detach();
-    });
-    attached = false;
-}
+    export function attachJava(callback: OnJavaClassLoadCallback): boolean {
+        onJavaClassLoadCallback = callback;
+        if (!javaAttached) {
+            javaAttached = attachJavaInternals(true);
+        }
+        return javaAttached;
+    }
 
-function attachInternals() {
-    const linker = Process.findModuleByName(Process.arch.indexOf('64') >= 0 ? 'linker64' : "linker");
-    if (linker) {
-        Java.performNow(function () {
-            const sdk = Java.use('android.os.Build$VERSION')['SDK_INT']['value'];
+    export function detach(): void {
+        interceptors.forEach(interceptor => {
+            interceptor.detach();
+        });
+        attached = false;
+    }
 
-            if (sdk >= 23) {
+    export function detachJava(): void {
+        attachJavaInternals(false);
+        javaAttached = false;
+    }
+
+    function attachInternals(): boolean {
+        if (Process.platform === 'windows') {
+            return attachWindows();
+        } else if (Java.available) {
+            return attachAndroid();
+        }
+
+        return false;
+    }
+
+    function attachJavaInternals(attach: boolean): boolean {
+        if (Java.available) {
+            Java.performNow(() => {
+                const handler = Java.use('java.lang.ClassLoader');
+                const overload = handler.loadClass.overload('java.lang.String', 'boolean');
+                if (!attach) {
+                    overload.implementation = null;
+                } else {
+                    overload.implementation = function (clazz: string, resolve: boolean) {
+                        if (onJavaClassLoadCallback) {
+                            onJavaClassLoadCallback(clazz);
+                        }
+                        return overload.call(this, clazz, resolve);
+                    };
+                }
+            });
+            return true;
+        }
+        return false;
+    }
+
+    function attachAndroid(): boolean {
+        const linker = Process.findModuleByName(Process.arch.indexOf('64') >= 0 ? 'linker64' : "linker");
+        if (linker) {
+            const androidMasterVersion = parseInt(Java.androidVersion.substring(0, 1));
+            if (androidMasterVersion >= 6) {
                 const symb = linker.enumerateSymbols();
-                let phdr_tgds_ptr = nullPtr;
-                let do_dlopen_ptr = nullPtr;
+                let phdrtgdsPtr = NULL;
+                let dodlopenPtr = NULL;
 
                 for (let sym in symb) {
                     if (symb[sym].name.indexOf("phdr_table_get_dynamic_section") >= 0) {
-                        phdr_tgds_ptr = symb[sym].address;
+                        phdrtgdsPtr = symb[sym].address;
                     } else if (symb[sym].name.indexOf('do_dlopen') >= 0) {
-                        do_dlopen_ptr = symb[sym].address;
+                        dodlopenPtr = symb[sym].address;
                     }
-                    if (phdr_tgds_ptr.compare(nullPtr) > 0 && do_dlopen_ptr.compare(nullPtr) > 0) {
+                    if (phdrtgdsPtr.compare(NULL) > 0 && dodlopenPtr.compare(NULL) > 0) {
                         break;
                     }
                 }
 
-                if (phdr_tgds_ptr.compare(nullPtr) > 0 && do_dlopen_ptr.compare(nullPtr) > 0) {
+                if (phdrtgdsPtr.compare(NULL) > 0 && dodlopenPtr.compare(NULL) > 0) {
                     let moduleName: string | null = null;
 
-                    interceptors.push(Interceptor.attach(phdr_tgds_ptr, function (args) {
+                    interceptors.push(Interceptor.attach(phdrtgdsPtr, function (args) {
                         if (moduleName && onLoadCallback) {
                             onLoadCallback(moduleName, args[2]);
                         }
                     }));
 
-                    interceptors.push(Interceptor.attach(do_dlopen_ptr, function (args) {
+                    interceptors.push(Interceptor.attach(dodlopenPtr, function (args) {
                         moduleName = args[0].readCString();
                     }));
+
+                    return true;
                 }
             } else {
                 if (Process.arch === 'ia32') {
@@ -78,13 +127,73 @@ function attachInternals() {
                                         }
                                     }
                                 }));
-                                break;
+                                return true;
                             }
                         }
                     }
                 }
             }
-        });
+        }
+
+        return false;
     }
-    attached = true;
+
+    function attachWindows(): boolean {
+        const kernel32 = Process.findModuleByName('kernel32.dll');
+        if (kernel32) {
+            const symbols = kernel32.enumerateSymbols();
+            let loadlibaPtr = NULL;
+            let loadlibexaPtr = NULL;
+            let loadlibwPtr = NULL;
+            let loadlibexwPtr = NULL;
+
+            for (const symbol in symbols) {
+                if (symbols[symbol].name.indexOf('LoadLibraryA') >= 0) {
+                    loadlibaPtr = symbols[symbol].address;
+                } else if (symbols[symbol].name.indexOf('LoadLibraryW') >= 0) {
+                    loadlibwPtr = symbols[symbol].address;
+                } else if (symbols[symbol].name.indexOf('LoadLibraryExA') >= 0) {
+                    loadlibexaPtr = symbols[symbol].address;
+                } else if (symbols[symbol].name.indexOf('LoadLibraryExW') >= 0) {
+                    loadlibexwPtr = symbols[symbol].address;
+                }
+
+                if ((loadlibaPtr.compare(NULL) !== 0) && (loadlibwPtr.compare(NULL) !== 0) &&
+                    (loadlibexaPtr.compare(NULL) !== 0) && (loadlibexwPtr.compare(NULL) !== 0)) {
+                    break;
+                }
+            }
+            if ((loadlibaPtr.compare(NULL) !== 0) && (loadlibwPtr.compare(NULL) !== 0) &&
+                (loadlibexaPtr.compare(NULL) !== 0) && (loadlibexwPtr.compare(NULL) !== 0)) {
+                interceptors.push(Interceptor.attach(loadlibaPtr, function (args) {
+                    const moduleName = args[0].readAnsiString();
+                    if (moduleName && onLoadCallback) {
+                        onLoadCallback(moduleName, args[2]);
+                    }
+                }));
+                interceptors.push(Interceptor.attach(loadlibexaPtr, function (args) {
+                    const moduleName = args[0].readAnsiString();
+                    if (moduleName && onLoadCallback) {
+                        onLoadCallback(moduleName, args[2]);
+                    }
+                }));
+                interceptors.push(Interceptor.attach(loadlibwPtr, function (args) {
+                    const moduleName = args[0].readUtf16String();
+                    if (moduleName && onLoadCallback) {
+                        onLoadCallback(moduleName, args[2]);
+                    }
+                }));
+                interceptors.push(Interceptor.attach(loadlibexwPtr, function (args) {
+                    const moduleName = args[0].readUtf16String();
+                    if (moduleName && onLoadCallback) {
+                        onLoadCallback(moduleName, args[2]);
+                    }
+                }));
+
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
