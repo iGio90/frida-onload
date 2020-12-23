@@ -71,67 +71,40 @@ export module OnLoadInterceptor {
     function attachAndroid(): boolean {
         const linker = Process.findModuleByName(Process.arch.indexOf('64') >= 0 ? 'linker64' : "linker");
         if (linker) {
-            const androidMasterVersion = parseInt(Java.androidVersion.substring(0, 1));
-            if (androidMasterVersion >= 6) {
-                const symb = linker.enumerateSymbols();
-                let phdrtgdsPtr = NULL;
-                let dodlopenPtr = NULL;
+            const symbols = linker.enumerateSymbols();
+            let doDlOpenPtr = NULL;
+            let callCtor = NULL;
 
-                for (let sym in symb) {
-                    if (symb[sym].name.indexOf("phdr_table_get_dynamic_section") >= 0) {
-                        phdrtgdsPtr = symb[sym].address;
-                    } else if (symb[sym].name.indexOf('do_dlopen') >= 0) {
-                        dodlopenPtr = symb[sym].address;
-                    }
-                    if (phdrtgdsPtr.compare(NULL) > 0 && dodlopenPtr.compare(NULL) > 0) {
-                        break;
-                    }
+            for (let index in symbols) {
+                if (symbols[index].name.indexOf("call_constructor") >= 0) {
+                    callCtor = symbols[index].address;
+                } else if (symbols[index].name.indexOf('do_dlopen') >= 0) {
+                    doDlOpenPtr = symbols[index].address;
                 }
 
-                if (phdrtgdsPtr.compare(NULL) > 0 && dodlopenPtr.compare(NULL) > 0) {
-                    let moduleName: string | null = null;
-
-                    interceptors.push(Interceptor.attach(phdrtgdsPtr, function (args) {
-                        if (moduleName && onLoadCallback) {
-                            onLoadCallback(moduleName, args[2]);
-                        }
-                    }));
-
-                    interceptors.push(Interceptor.attach(dodlopenPtr, function (args) {
-                        moduleName = args[0].readCString();
-                    }));
-
-                    return true;
+                if (callCtor.compare(NULL) > 0 && doDlOpenPtr.compare(NULL) > 0) {
+                    break;
                 }
-            } else {
-                if (Process.arch === 'ia32') {
-                    // this suck hard but it's the best way i can think
-                    // working on latest nox emulator 5.1.1
-                    const linkerRanges = linker.enumerateRanges('r-x');
-                    if (linkerRanges) {
-                        for (let i = 0; i < linkerRanges.length; i++) {
-                            let range = linkerRanges[i];
-                            let res = Memory.scanSync(range.base, range.size, '89 FD C7 44 24 30 00 00 00 00');
-                            if (res.length > 0) {
-                                interceptors.push(Interceptor.attach(res[0].address, function () {
-                                    const context = this.context as Ia32CpuContext;
-                                    if (context.ecx.toInt32() !== 0x8) {
-                                        return;
-                                    }
+            }
 
-                                    const w = context.esi.readCString();
-                                    if (w && onLoadCallback !== null) {
-                                        const module = Process.findModuleByName(w);
-                                        if (module) {
-                                            onLoadCallback(w, module.base);
-                                        }
-                                    }
-                                }));
-                                return true;
-                            }
+            if (callCtor.compare(NULL) > 0 && doDlOpenPtr.compare(NULL) > 0) {
+                let moduleName: string | null = null;
+
+                interceptors.push(Interceptor.attach(callCtor, function (args) {
+                    if (moduleName && onLoadCallback) {
+                        const targetModule = Process.findModuleByName(moduleName);
+                        if (targetModule !== null) {
+                            onLoadCallback(moduleName, targetModule.base);
+                            moduleName = null;
                         }
                     }
-                }
+                }));
+
+                interceptors.push(Interceptor.attach(doDlOpenPtr, function (args) {
+                    moduleName = args[0].readCString();
+                }));
+
+                return true;
             }
         }
 
