@@ -45,6 +45,26 @@ async function main() {
 main().catch(e => console.log(e.stack));
 ```
 
+If you need to wait for a Java class to be created:
+```typescript
+// async.ts
+import "frida-onload";
+
+Java.performNow(() => {
+    async function main() {
+        const sneakyClass = await Java.waitFor("org.external.loaded.class");
+        if (sneakyClass != null) {
+            sneakyClass.sneakyMethod.overload().implementation = function () {
+                console.log("I got you!");
+                return this.sneakyMethod();
+            };
+        }
+    }
+
+    main().catch(e => console.log(e.stack));
+});
+```
+
 ## Changelog
 
 **2021.01.04**
