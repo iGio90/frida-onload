@@ -1,172 +1,100 @@
-export module OnLoadInterceptor {
-    const interceptors: InvocationListener[] = [];
-    let onLoadCallback: OnLoadCallback | null = null;
-    let onJavaClassLoadCallback: OnJavaClassLoadCallback | null = null;
-
-    let attached = false;
-    let javaAttached = false;
-
-    type OnLoadCallback = (name: string, base: NativePointer) => void;
-    type OnJavaClassLoadCallback = (clazz: string) => void;
-
-    export function attach(callback: OnLoadCallback): boolean {
-        onLoadCallback = callback;
-        if (!attached) {
-            attached = attachInternals();
-        }
-        return attached;
+declare global {
+    namespace Java {
+        /**
+         * It waits for a `java.lang.Class` to be defined, if necessary.
+         * @param className The name of the class to wait for.
+         * @return A promise containing the given class, or
+         * `null` if a `NoClassDefFoundError` happened.
+         */
+        function waitFor(className: string): Promise<Java.Wrapper | null>;
     }
 
-    export function attachJava(callback: OnJavaClassLoadCallback): boolean {
-        onJavaClassLoadCallback = callback;
-        if (!javaAttached) {
-            javaAttached = attachJavaInternals(true);
-        }
-        return javaAttached;
-    }
+    namespace Module {
+        /**
+         * Executes a sync callback as soon as a new `Module` is loaded
+         * (e.g. before `DT_INIT` and `DT_INIT_ARRAY` on Android).
+         * @param moduleName The name of the target module.
+         * @param callback The callback to execute.
+         */
+        function onLoad(moduleName: string, callback: (module: Module, wasAlreadyLoaded: boolean) => void): void;
 
-    export function detach(): void {
-        interceptors.forEach(interceptor => {
-            interceptor.detach();
-        });
-        attached = false;
-    }
-
-    export function detachJava(): void {
-        attachJavaInternals(false);
-        javaAttached = false;
-    }
-
-    function attachInternals(): boolean {
-        if (Process.platform === 'windows') {
-            return attachWindows();
-        } else if (Java.available) {
-            return attachAndroid();
-        }
-
-        return false;
-    }
-
-    function attachJavaInternals(attach: boolean): boolean {
-        if (Java.available) {
-            Java.performNow(() => {
-                const handler = Java.use('java.lang.ClassLoader');
-                const overload = handler.loadClass.overload('java.lang.String', 'boolean');
-                if (!attach) {
-                    overload.implementation = null;
-                } else {
-                    overload.implementation = function (clazz: string, resolve: boolean) {
-                        if (onJavaClassLoadCallback) {
-                            onJavaClassLoadCallback(clazz);
-                        }
-                        return overload.call(this, clazz, resolve);
-                    };
-                }
-            });
-            return true;
-        }
-        return false;
-    }
-
-    function attachAndroid(): boolean {
-        const linker = Process.findModuleByName(Process.arch.indexOf('64') >= 0 ? 'linker64' : "linker");
-        if (linker) {
-            const symbols = linker.enumerateSymbols();
-            let doDlOpenPtr = NULL;
-            let callCtor = NULL;
-
-            for (let index in symbols) {
-                if (symbols[index].name.indexOf("call_constructor") >= 0) {
-                    callCtor = symbols[index].address;
-                } else if (symbols[index].name.indexOf('do_dlopen') >= 0) {
-                    doDlOpenPtr = symbols[index].address;
-                }
-
-                if (callCtor.compare(NULL) > 0 && doDlOpenPtr.compare(NULL) > 0) {
-                    break;
-                }
-            }
-
-            if (callCtor.compare(NULL) > 0 && doDlOpenPtr.compare(NULL) > 0) {
-                let moduleName: string | null = null;
-
-                interceptors.push(Interceptor.attach(callCtor, function (args) {
-                    if (moduleName && onLoadCallback) {
-                        const targetModule = Process.findModuleByName(moduleName);
-                        if (targetModule !== null) {
-                            onLoadCallback(moduleName, targetModule.base);
-                            moduleName = null;
-                        }
-                    }
-                }));
-
-                interceptors.push(Interceptor.attach(doDlOpenPtr, function (args) {
-                    moduleName = args[0].readCString();
-                }));
-
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    function attachWindows(): boolean {
-        const kernel32 = Process.findModuleByName('kernel32.dll');
-        if (kernel32) {
-            const symbols = kernel32.enumerateSymbols();
-            let loadlibaPtr = NULL;
-            let loadlibexaPtr = NULL;
-            let loadlibwPtr = NULL;
-            let loadlibexwPtr = NULL;
-
-            for (const symbol in symbols) {
-                if (symbols[symbol].name.indexOf('LoadLibraryA') >= 0) {
-                    loadlibaPtr = symbols[symbol].address;
-                } else if (symbols[symbol].name.indexOf('LoadLibraryW') >= 0) {
-                    loadlibwPtr = symbols[symbol].address;
-                } else if (symbols[symbol].name.indexOf('LoadLibraryExA') >= 0) {
-                    loadlibexaPtr = symbols[symbol].address;
-                } else if (symbols[symbol].name.indexOf('LoadLibraryExW') >= 0) {
-                    loadlibexwPtr = symbols[symbol].address;
-                }
-
-                if ((loadlibaPtr.compare(NULL) !== 0) && (loadlibwPtr.compare(NULL) !== 0) &&
-                    (loadlibexaPtr.compare(NULL) !== 0) && (loadlibexwPtr.compare(NULL) !== 0)) {
-                    break;
-                }
-            }
-            if ((loadlibaPtr.compare(NULL) !== 0) && (loadlibwPtr.compare(NULL) !== 0) &&
-                (loadlibexaPtr.compare(NULL) !== 0) && (loadlibexwPtr.compare(NULL) !== 0)) {
-                interceptors.push(Interceptor.attach(loadlibaPtr, function (args) {
-                    const moduleName = args[0].readAnsiString();
-                    if (moduleName && onLoadCallback) {
-                        onLoadCallback(moduleName, args[2]);
-                    }
-                }));
-                interceptors.push(Interceptor.attach(loadlibexaPtr, function (args) {
-                    const moduleName = args[0].readAnsiString();
-                    if (moduleName && onLoadCallback) {
-                        onLoadCallback(moduleName, args[2]);
-                    }
-                }));
-                interceptors.push(Interceptor.attach(loadlibwPtr, function (args) {
-                    const moduleName = args[0].readUtf16String();
-                    if (moduleName && onLoadCallback) {
-                        onLoadCallback(moduleName, args[2]);
-                    }
-                }));
-                interceptors.push(Interceptor.attach(loadlibexwPtr, function (args) {
-                    const moduleName = args[0].readUtf16String();
-                    if (moduleName && onLoadCallback) {
-                        onLoadCallback(moduleName, args[2]);
-                    }
-                }));
-
-                return true;
-            }
-        }
-
-        return false;
+        /**
+         * It waits for a "Module" to be loaded, if necessary.
+         * @param moduleName The name of the target module.
+         */
+        function waitFor(moduleName: string): Promise<Module>;
     }
 }
+
+Java.waitFor = function (className) {
+    return new Promise<Java.Wrapper | null>(resolve => {
+        const responsible = Process.getModuleByName(Java.use("dalvik.system.VMRuntime").getRuntime().vmLibrary());
+        const defineClassNative = responsible.enumerateSymbols().find(symbol => symbol.name.includes("defineClassNative"))!;
+
+        const JavaString = Java.use("java.lang.String");
+        const JavaClass = Java.use("java.lang.Class");
+
+        try {
+            resolve(Java.use(className));
+        } catch (e) {
+            const interceptor = Interceptor.attach(defineClassNative.address, {
+                onEnter(args) {
+                    this.isTargetClass = Java.cast(args[2], JavaString).toString() == className;
+                },
+                onLeave(klassHandle) {
+                    if (this.isTargetClass) {
+                        setTimeout(() => interceptor.detach());
+                        resolve(klassHandle.isNull() ? null : Java.cast(klassHandle, JavaClass));
+                    }
+                }
+            });
+        }
+    });
+};
+
+Module.onLoad = function (moduleName, callback) {
+    if (!isAndroid && !isWindows) {
+        throw new Error(`Platform ${Process.platform} is not supported.`);
+    }
+
+    const targets = getTargets();
+
+    const module = Process.findModuleByName(moduleName);
+    if (module) {
+        callback(module, true);
+    } else {
+        const interceptors = targets.map(target =>
+            Interceptor.attach(target.address, {
+                onEnter(args) {
+                    if (isWindows) {
+                        this.modulePath = target.name.endsWith("A") ? args[0].readAnsiString() : args[0].readUtf16String();
+                    }
+                },
+                onLeave(returnValue) {
+                    const modulePath = isAndroid ? returnValue.readUtf8String() : (this.modulePath as string | null);
+                    if (modulePath?.endsWith(moduleName)) {
+                        setTimeout(() => interceptors.forEach(i => i.detach()));
+                        callback(Process.getModuleByName(moduleName), false);
+                    }
+                }
+            })
+        );
+    }
+};
+
+Module.waitFor = moduleName => new Promise<Module>(resolve => Module.onLoad(moduleName, resolve));
+
+let getTargets = () => {
+    const responsible = Process.getModuleByName(isAndroid ? (Process.pointerSize == 8 ? "linker64" : "linker") : "kernel32.dll");
+    const targetNames = isAndroid ? ["get_realpath"] : ["LoadLibraryA", "LoadLibraryExA", "LoadLibraryW", "LoadLibraryExW"];
+
+    const list: (ModuleExportDetails | ModuleSymbolDetails)[] = isAndroid ? responsible.enumerateSymbols() : responsible.enumerateExports();
+    const targets = list.filter(symbolOrExport => targetNames.some(targetName => symbolOrExport.name.includes(targetName)));
+
+    return (getTargets = () => targets)();
+};
+
+const isAndroid = Java.available;
+const isWindows = Process.platform == "windows";
+
+export {};
