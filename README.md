@@ -47,7 +47,7 @@ main().catch(e => console.log(e.stack));
 
 If you need to wait for a Java class to be created:
 ```typescript
-// async.ts
+// java.ts
 import "frida-onload";
 
 Java.performNow(() => {
