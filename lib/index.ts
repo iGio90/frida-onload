@@ -1,24 +1,22 @@
-type OnLoadCallback = (module: Module, wasAlreadyLoaded: boolean) => void;
-
 declare global {
     namespace Java {
         /**
-         * It waits for a "java.lang.Class" to be defined, if necessary.
+         * It waits for a `java.lang.Class` to be defined, if necessary.
          * @param className The name of the class to wait for.
          * @return A promise containing the given class, or
-         * "null" if a "NoClassDefFoundError" happened.
+         * `null` if a `NoClassDefFoundError` happened.
          */
         function waitFor(className: string): Promise<Java.Wrapper | null>;
     }
 
     namespace Module {
         /**
-         * Executes a sync callback when a new "Module" is loaded,
-         * before "DT_INIT" and "DT_INIT_ARRAY".
+         * Executes a sync callback as soon as a new `Module` is loaded
+         * (e.g. before `DT_INIT` and `DT_INIT_ARRAY` on Android).
          * @param moduleName The name of the target module.
          * @param callback The callback to execute.
          */
-        function onLoad(moduleName: string, callback: OnLoadCallback): void;
+        function onLoad(moduleName: string, callback: (module: Module, wasAlreadyLoaded: boolean) => void): void;
 
         /**
          * It waits for a "Module" to be loaded, if necessary.
@@ -54,12 +52,9 @@ Java.waitFor = function (className) {
     });
 };
 
-Module.onLoad = function (moduleName: string, callback: OnLoadCallback) {
-    if (!isAndroid && !isWindows) throw new Error("Platform ${Process.platform} is not supported.");
-
-    function returner() {
-        setTimeout(() => interceptors.forEach(i => i.detach()));
-        callback(Process.getModuleByName(moduleName), false);
+Module.onLoad = function (moduleName, callback) {
+    if (!isAndroid && !isWindows) {
+        throw new Error(`Platform ${Process.platform} is not supported.`);
     }
 
     const targets = getTargets();
@@ -67,45 +62,34 @@ Module.onLoad = function (moduleName: string, callback: OnLoadCallback) {
     const module = Process.findModuleByName(moduleName);
     if (module) {
         callback(module, true);
-        return;
+    } else {
+        const interceptors = targets.map(target =>
+            Interceptor.attach(target.address, {
+                onEnter(args) {
+                    if (isWindows) {
+                        this.modulePath = target.name.endsWith("A") ? args[0].readAnsiString() : args[0].readUtf16String();
+                    }
+                },
+                onLeave(returnValue) {
+                    const modulePath = isAndroid ? returnValue.readUtf8String() : (this.modulePath as string | null);
+                    if (modulePath?.endsWith(moduleName)) {
+                        setTimeout(() => interceptors.forEach(i => i.detach()));
+                        callback(Process.getModuleByName(moduleName), false);
+                    }
+                }
+            })
+        );
     }
-
-    const interceptors = targets.map(target => {
-        const callbacks: ScriptInvocationListenerCallbacks = {};
-
-        if (isAndroid) {
-            callbacks.onLeave = function (returnValue) {
-                if (returnValue.readUtf8String()?.endsWith(moduleName)) {
-                    returner();
-                }
-            };
-        } else if (isWindows) {
-            callbacks.onEnter = function (args) {
-                this.modulePath = target.name.endsWith("A") ? args[0].readAnsiString() : args[0].readUtf16String();
-            };
-            callbacks.onLeave = function () {
-                if (this.modulePath.endsWith(moduleName)) {
-                    returner();
-                }
-            };
-        }
-
-        return Interceptor.attach(target.address, callbacks);
-    });
 };
 
-Module.waitFor = function (moduleName) {
-    return new Promise<Module>(resolve => Module.onLoad(moduleName, resolve));
-};
+Module.waitFor = moduleName => new Promise<Module>(resolve => Module.onLoad(moduleName, resolve));
 
 let getTargets = () => {
-    const responsibleName = isAndroid ? (Process.arch.endsWith("64") ? "linker64" : "linker") : "kernel32.dll";
-
+    const responsible = Process.getModuleByName(isAndroid ? (Process.pointerSize == 8 ? "linker64" : "linker") : "kernel32.dll");
     const targetNames = isAndroid ? ["get_realpath"] : ["LoadLibraryA", "LoadLibraryExA", "LoadLibraryW", "LoadLibraryExW"];
 
-    const targets = Process.getModuleByName(responsibleName)
-        .enumerateSymbols()
-        .filter(symbol => targetNames.some(target => symbol.name.includes(target)));
+    const list: (ModuleExportDetails | ModuleSymbolDetails)[] = isAndroid ? responsible.enumerateSymbols() : responsible.enumerateExports();
+    const targets = list.filter(symbolOrExport => targetNames.some(targetName => symbolOrExport.name.includes(targetName)));
 
     return (getTargets = () => targets)();
 };
